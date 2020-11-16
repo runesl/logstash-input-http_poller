@@ -35,9 +35,15 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
   # hash of metadata.
   config :metadata_target, :validate => :string, :default => '@metadata'
 
-  # Choose if you want to emit events on non-2xx http responses. If set to false, such responses will instead be logged
-  # as warnings
-  config :eventify_http_failures, :validate => :string, :default => true
+  # Contains these elements:
+  # name: the filename of the state file
+  # initial_value: If the state file does not exist, it will be created with this value.
+  # update_function: After a successful http call, this ruby expression is evaluated to generate the next version of state
+  # in the state_file. Inputs provided: last_event, state
+  # Example:
+  # a) state.to_i + 1
+  # b) last_event.date
+  config :state_file, :validate => :hash
 
   public
   Schedule_types = %w(cron every at in)
@@ -47,6 +53,7 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
     @logger.info("Registering http_poller Input", :type => @type, :schedule => @schedule, :timeout => @timeout)
 
     setup_requests!
+    validate_state_file_config if @state_file
   end
 
   def stop
@@ -104,7 +111,7 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
   def validate_request!(url_or_spec, request)
     method, url, spec = request
 
-    raise LogStash::ConfigurationError, "Invalid URL #{url}" unless URI::DEFAULT_PARSER.regexp[:ABS_URI].match(url)
+    raise LogStash::ConfigurationError, "Invalid URL #{url}" unless URI::DEFAULT_PARSER.regexp[:ABS_URI].match(url.gsub(/\{(?<expression>.*?poll_state.*?)\}/) {''})
 
     raise LogStash::ConfigurationError, "No URL provided for request! #{url_or_spec}" unless url
     if spec && spec[:auth]
@@ -117,6 +124,14 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
     end
 
     request
+  end
+
+  private
+  def validate_state_file_config()
+    @logger.debug("validate_state_file", :state_file => @state_file)
+    @logger.debug("validate_state_file", :name => @state_file["name"])
+    raise LogStash::ConfigurationError, "No 'name' provided inside state_file => {...} !" unless @state_file["name"]
+    raise LogStash::ConfigurationError, "No 'update_function' provided inside state_file  => {...} !" unless @state_file["update_function"]
   end
 
   public
@@ -140,49 +155,81 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
     @scheduler.join
   end
 
+  # Despite it's name, this method is called on each poll
   def run_once(queue)
+    state = read_state
     @requests.each do |name, request|
-      request_async(queue, name, request)
+      request = update_request_with_poll_state(request, state) if @state_file
+      request_async(queue, name, request, state)
     end
 
     client.execute!
   end
 
+  def read_state
+    if not File.file?(@state_file["name"])
+        File.write(@state_file_name, @state_file["initial_value"])
+        @logger.debug? && @logger.debug("Wrote initial value to state_file", :state_file => @state_file)
+    end
+    state = File.read(@state_file["name"])
+  end
+
+  # Evaluate poll_state expressions in url and body.
+  # A poll_state expression must be on the form '(<ruby-code>)', where <ruby-code> contains at least one reference to
+  # 'poll_state' variable. Example: (poll_state.to_i+1)
+  def update_request_with_poll_state(static_request, poll_state)
+    @logger.debug("update_request_with_poll_state", :state => poll_state, :static_request => static_request)
+    new_url = static_request[1].gsub(/\{(?<expression>.*?poll_state.*?)\}/) { eval($~[:expression]).to_s }
+
+    new_spec = static_request[2].clone
+    if static_request[2] != nil && static_request[2].key?("body")
+        new_spec[:body] = static_request[2][:body].gsub(/\{(?<expression>.*?poll_state.*?)\}/) { eval($~[:expression]).to_s }
+    end
+    [static_request[0], new_url, new_spec]
+  end
+
   private
-  def request_async(queue, name, request)
+  def request_async(queue, name, request, state)
     @logger.debug? && @logger.debug("Fetching URL", :name => name, :url => request)
     started = Time.now
 
     method, *request_opts = request
     client.async.send(method, *request_opts).
-      on_success {|response| handle_success(queue, name, request, response, Time.now - started)}.
+      on_success {|response| handle_success(queue, name, request, response, Time.now - started, state)}.
       on_failure {|exception|
       handle_failure(queue, name, request, exception, Time.now - started)
     }
   end
 
   private
-  def handle_success(queue, name, request, response, execution_time)
-    # Manticore's definition of "success" includes requests that return non-2xx response codes.
-    # All such responses need to be handled here.
-    if response.code > 299 && (!@eventify_http_failures) && @logger.warning?
-       @logger.warning("Non-successful http response received",
-                                      :url => request,
-                                      :response => response)
-    else
-        body = response.body
-        # If there is a usable response. HEAD requests are `nil` and empty get
-        # responses come up as "" which will cause the codec to not yield anything
-        if body && body.size > 0
-          decode_and_flush(@codec, body) do |decoded|
-            event = @target ? LogStash::Event.new(@target => decoded.to_hash) : decoded
-            handle_decoded_event(queue, name, request, response, event, execution_time)
-          end
-        else
-          event = ::LogStash::Event.new
-          handle_decoded_event(queue, name, request, response, event, execution_time)
-        end
+  def handle_success(queue, name, request, response, execution_time, state)
+    body = response.body
+    # If there is a usable response. HEAD requests are `nil` and empty get
+    # responses come up as "" which will cause the codec to not yield anything
+    last_event = nil
+    if body && body.size > 0
+      decode_and_flush(@codec, body) do |decoded|
+        event = @target ? LogStash::Event.new(@target => decoded.to_hash) : decoded
+        handle_decoded_event(queue, name, request, response, event, execution_time)
+        last_event = event
       end
+    else
+      event = ::LogStash::Event.new
+      last_event = event
+      handle_decoded_event(queue, name, request, response, event, execution_time)
+    end
+    update_state_file(last_event.to_hash, state) if @state_file
+  end
+
+  def update_state_file(last_event, poll_state)
+    @logger.debug? && @logger.debug("update_state_file.", :update_function => @state_file["update_function"],
+        :poll_state => poll_state, :last_event => last_event)
+    begin
+        poll_state = eval(@state_file["update_function"])
+        File.write(@state_file["name"], poll_state)
+    rescue SyntaxError => se
+        @logger.debug("Your http_poller update_function failed with SyntaxError.", :se => se, :update_function => update_function)
+    end
   end
 
   private
@@ -276,6 +323,6 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
     Hash[(spec||{}).merge({
       "method" => method.to_s,
       "url" => url,
-    }).map {|k,v| [k.to_s, k.to_s != "auth" ? v : "<auth-stripped>"] }]
+    }).map {|k,v| [k.to_s,v] }]
   end
 end
