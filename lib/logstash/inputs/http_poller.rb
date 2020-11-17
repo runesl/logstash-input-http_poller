@@ -172,7 +172,7 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
 
   def read_state
     if not File.file?(@state_file["name"])
-        File.write(@state_file_name, @state_file["initial_value"])
+        File.write(@state_file["name"], @state_file["initial_value"])
         @logger.debug? && @logger.debug("Wrote initial value to state_file", :state_file => @state_file)
     end
     state = File.read(@state_file["name"])
