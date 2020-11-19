@@ -35,6 +35,10 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
   # hash of metadata.
   config :metadata_target, :validate => :string, :default => '@metadata'
 
+  # Choose if you want to emit events on non-2xx http responses. If set to false, such responses will instead be logged
+  # as warnings
+  config :eventify_http_failures, :validate => :string, :default => true
+
   # Contains these elements:
   # name: the filename of the state file
   # initial_value: If the state file does not exist, it will be created with this value.
@@ -86,17 +90,17 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
       auth = spec[:auth]
       user = spec.delete(:user) || (auth && auth["user"])
       password = spec.delete(:password) || (auth && auth["password"])
-      
+
       if user.nil? ^ password.nil?
         raise LogStash::ConfigurationError, "'user' and 'password' must both be specified for input HTTP poller!"
       end
 
       if user && password
         spec[:auth] = {
-          user: user, 
+          user: user,
           pass: password,
           eager: true
-        } 
+        }
       end
       res = [method, url, spec]
     else
@@ -150,7 +154,7 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
 
     @scheduler = Rufus::Scheduler.new(:max_work_threads => 1)
     #as of v3.0.9, :first_in => :now doesn't work. Use the following workaround instead
-    opts = schedule_type == "every" ? { :first_in => 0.01 } : {} 
+    opts = schedule_type == "every" ? { :first_in => 0.01 } : {}
     @scheduler.send(schedule_type, schedule_value, opts) { run_once(queue) }
     @scheduler.join
   end
@@ -203,22 +207,30 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
 
   private
   def handle_success(queue, name, request, response, execution_time, state)
-    body = response.body
-    # If there is a usable response. HEAD requests are `nil` and empty get
-    # responses come up as "" which will cause the codec to not yield anything
-    last_event = nil
-    if body && body.size > 0
-      decode_and_flush(@codec, body) do |decoded|
-        event = @target ? LogStash::Event.new(@target => decoded.to_hash) : decoded
-        handle_decoded_event(queue, name, request, response, event, execution_time)
-        last_event = event
-      end
+    # Manticore's definition of "success" includes requests that return non-2xx response codes.
+    # All such responses need to be handled here.
+    if response.code > 299 && (!@eventify_http_failures) && @logger.warning?
+       @logger.warning("Non-successful http response received",
+                                      :url => request,
+                                      :response => response)
     else
-      event = ::LogStash::Event.new
-      last_event = event
-      handle_decoded_event(queue, name, request, response, event, execution_time)
+      body = response.body
+      # If there is a usable response. HEAD requests are `nil` and empty get
+      # responses come up as "" which will cause the codec to not yield anything
+      last_event = nil
+      if body && body.size > 0
+        decode_and_flush(@codec, body) do |decoded|
+          event = @target ? LogStash::Event.new(@target => decoded.to_hash) : decoded
+          handle_decoded_event(queue, name, request, response, event, execution_time)
+          last_event = event
+        end
+      else
+        event = ::LogStash::Event.new
+        last_event = event
+        handle_decoded_event(queue, name, request, response, event, execution_time)
+      end
+      update_state_file(last_event.to_hash, state) if @state_file
     end
-    update_state_file(last_event.to_hash, state) if @state_file
   end
 
   def update_state_file(last_event, poll_state)
@@ -323,6 +335,6 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
     Hash[(spec||{}).merge({
       "method" => method.to_s,
       "url" => url,
-    }).map {|k,v| [k.to_s,v] }]
+    }).map {|k,v| [k.to_s, k.to_s != "auth" ? v : "<auth-stripped>"] }]
   end
 end
