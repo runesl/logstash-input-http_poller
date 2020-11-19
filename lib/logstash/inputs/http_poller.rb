@@ -43,10 +43,9 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
   # name: the filename of the state file
   # initial_value: If the state file does not exist, it will be created with this value.
   # update_function: After a successful http call, this ruby expression is evaluated to generate the next version of state
-  # in the state_file. Inputs provided: last_event, state
-  # Example:
-  # a) state.to_i + 1
-  # b) last_event.date
+  #                  in the state_file. Inputs provided: last_event, state
+  # poll_condition_function: <optional> A ruby expression that must evaluate to 'true' for the poll to take place.
+  #     Example: "poll_state.to_i < Time.now.to_i"
   config :state_file, :validate => :hash
 
   public
@@ -162,6 +161,11 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
   # Despite it's name, this method is called on each poll
   def run_once(queue)
     state = read_state
+    if @state_file && !evaluate_poll_condition(state)
+        @logger.debug? && @logger.debug("Skipping poll due to poll condition")
+        return
+    end
+
     @requests.each do |name, request|
       request = update_request_with_poll_state(request, state) if @state_file
       request_async(queue, name, request, state)
@@ -241,6 +245,18 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
         File.write(@state_file["name"], poll_state)
     rescue SyntaxError => se
         @logger.debug("Your http_poller update_function failed with SyntaxError.", :se => se, :update_function => update_function)
+    end
+  end
+
+  # Return true if poll is to be performed, false if it is to be skipped
+  def evaluate_poll_condition(poll_state)
+    return true unless @state_file["poll_condition_function"]
+    @logger.debug? && @logger.debug("evaluate_poll_condition.", :poll_condition_function => @state_file["poll_condition_function"],
+        :poll_state => poll_state)
+    begin
+        eval(@state_file["poll_condition_function"])
+    rescue SyntaxError => se
+        @logger.debug("Your poll_condition_function failed with SyntaxError.", :se => se, :update_function => update_function)
     end
   end
 
