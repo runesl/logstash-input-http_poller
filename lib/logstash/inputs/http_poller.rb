@@ -35,6 +35,10 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
   # hash of metadata.
   config :metadata_target, :validate => :string, :default => '@metadata'
 
+  # Choose if you want to emit events on non-2xx http responses. If set to false, such responses will instead be logged
+  # as warnings
+  config :eventify_http_failures, :validate => :string, :default => true
+
   public
   Schedule_types = %w(cron every at in)
   def register
@@ -159,18 +163,26 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
 
   private
   def handle_success(queue, name, request, response, execution_time)
-    body = response.body
-    # If there is a usable response. HEAD requests are `nil` and empty get
-    # responses come up as "" which will cause the codec to not yield anything
-    if body && body.size > 0
-      decode_and_flush(@codec, body) do |decoded|
-        event = @target ? LogStash::Event.new(@target => decoded.to_hash) : decoded
-        handle_decoded_event(queue, name, request, response, event, execution_time)
-      end
+    # Manticore's definition of "success" includes requests that return non-2xx response codes.
+    # All such responses need to be handled here.
+    if response.code > 299 && (!@eventify_http_failures) && @logger.warning?
+       @logger.warning("Non-successful http response received",
+                                      :url => request,
+                                      :response => response)
     else
-      event = ::LogStash::Event.new
-      handle_decoded_event(queue, name, request, response, event, execution_time)
-    end
+        body = response.body
+        # If there is a usable response. HEAD requests are `nil` and empty get
+        # responses come up as "" which will cause the codec to not yield anything
+        if body && body.size > 0
+          decode_and_flush(@codec, body) do |decoded|
+            event = @target ? LogStash::Event.new(@target => decoded.to_hash) : decoded
+            handle_decoded_event(queue, name, request, response, event, execution_time)
+          end
+        else
+          event = ::LogStash::Event.new
+          handle_decoded_event(queue, name, request, response, event, execution_time)
+        end
+      end
   end
 
   private
@@ -264,6 +276,6 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
     Hash[(spec||{}).merge({
       "method" => method.to_s,
       "url" => url,
-    }).map {|k,v| [k.to_s,v] }]
+    }).map {|k,v| [k.to_s, k.to_s != "auth" ? v : "<auth-stripped>"] }]
   end
 end
