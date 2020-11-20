@@ -190,8 +190,9 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
     new_url = static_request[1].gsub(/\{(?<expression>.*?poll_state.*?)\}/) { eval($~[:expression]).to_s }
 
     new_spec = static_request[2].clone
-    if static_request[2] != nil && static_request[2].key?("body")
+    if static_request[2] != nil && static_request[2].key?(:body)
         new_spec[:body] = static_request[2][:body].gsub(/\{(?<expression>.*?poll_state.*?)\}/) { eval($~[:expression]).to_s }
+        @logger.debug("updated body", :state => poll_state, :new_spec => new_spec)
     end
     [static_request[0], new_url, new_spec]
   end
