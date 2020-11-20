@@ -37,7 +37,7 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
 
   # Choose if you want to emit events on non-2xx http responses. If set to false, such responses will instead be logged
   # as warnings
-  config :eventify_http_failures, :validate => :string, :default => true
+  config :eventify_http_failures, :validate => :boolean, :default => true
 
   # Contains these elements:
   # name: the filename of the state file
