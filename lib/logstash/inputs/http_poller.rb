@@ -165,8 +165,8 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
   def handle_success(queue, name, request, response, execution_time)
     # Manticore's definition of "success" includes requests that return non-2xx response codes.
     # All such responses need to be handled here.
-    if response.code > 299 && (!@eventify_http_failures) && @logger.warning?
-       @logger.warning("Non-successful http response received",
+    if response.code > 299 && (!@eventify_http_failures) && @logger.warn?
+       @logger.warn("Non-successful http response received",
                                       :url => request,
                                       :response => response)
     else
