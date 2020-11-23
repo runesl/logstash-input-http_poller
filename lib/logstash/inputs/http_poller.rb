@@ -282,6 +282,6 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
     Hash[(spec||{}).merge({
       "method" => method.to_s,
       "url" => url,
-    }).map {|k,v| [k.to_s, k.to_s  =~ /auth/i ? "<auth-stripped>": v]}]
+    }).map {|k,v| [k.to_s, k.to_s =~ /auth/i || v.to_s =~ /auth/i ? "<auth-stripped>": v]}]
   end
 end
