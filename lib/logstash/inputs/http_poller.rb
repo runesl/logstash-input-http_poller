@@ -209,37 +209,42 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
   private
   # Beware, on old versions of manticore some uncommon failures are not handled
   def handle_failure(queue, name, request, exception, execution_time)
-    event = LogStash::Event.new
-    apply_metadata(event, name, request)
+    failure =  {
+        "request" => structure_request(request),
+        "name" => name,
+        "error" => exception.to_s,
+        "backtrace" => exception.backtrace,
+        "runtime_seconds" => execution_time
+    }
 
-    event.tag("_http_request_failure")
+    if !@eventify_http_failures && @logger.warn?
+       @logger.warn("http failure", :failure => failure)
+   else
+        event = LogStash::Event.new
+        apply_metadata(event, name, request)
 
-    # This is also in the metadata, but we send it anyone because we want this
-    # persisted by default, whereas metadata isn't. People don't like mysterious errors
-    event.set("http_request_failure", {
-      "request" => structure_request(request),
-      "name" => name,
-      "error" => exception.to_s,
-      "backtrace" => exception.backtrace,
-      "runtime_seconds" => execution_time
-   })
+        event.tag("_http_request_failure")
 
-    queue << event
-  rescue StandardError, java.lang.Exception => e
-      @logger.error? && @logger.error("Cannot read URL or send the error as an event!",
-                                      :exception => e,
-                                      :exception_message => e.message,
-                                      :exception_backtrace => e.backtrace,
-                                      :name => name)
+        # This is also in the metadata, but we send it anyone because we want this
+        # persisted by default, whereas metadata isn't. People don't like mysterious errors
+        event.set("http_request_failure", failure)
 
-      # If we are running in debug mode we can display more information about the
-      # specific request which could give more details about the connection.
-      @logger.debug? && @logger.debug("Cannot read URL or send the error as an event!",
-                                      :exception => e,
-                                      :exception_message => e.message,
-                                      :exception_backtrace => e.backtrace,
-                                      :name => name,
-                                      :url => request)
+        queue << event
+      rescue StandardError, java.lang.Exception => e
+          @logger.error? && @logger.error("Cannot read URL or send the error as an event!",
+                                          :exception => e,
+                                          :exception_message => e.message,
+                                          :exception_backtrace => e.backtrace,
+                                          :name => name)
+
+          # If we are running in debug mode we can display more information about the
+          # specific request which could give more details about the connection.
+          @logger.debug? && @logger.debug("Cannot read URL or send the error as an event!",
+                                          :exception => e,
+                                          :exception_message => e.message,
+                                          :exception_backtrace => e.backtrace,
+                                          :name => name,
+                                          :url => request)
   end
 
   private
