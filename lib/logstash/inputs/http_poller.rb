@@ -131,8 +131,6 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
 
   private
   def validate_state_file_config()
-    @logger.debug("validate_state_file", :state_file => @state_file)
-    @logger.debug("validate_state_file", :name => @state_file["name"])
     raise LogStash::ConfigurationError, "No 'name' provided inside state_file => {...} !" unless @state_file["name"]
     raise LogStash::ConfigurationError, "No 'update_function' provided inside state_file  => {...} !" unless @state_file["update_function"]
   end
@@ -246,19 +244,22 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
         poll_state = eval(@state_file["update_function"])
         File.write(@state_file["name"], poll_state)
     rescue SyntaxError => se
-        @logger.debug("Your http_poller update_function failed with SyntaxError.", :se => se, :update_function => update_function)
+        @logger.warn("Your http_poller update_function failed with SyntaxError.", :se => se,
+            :update_function => update_function)
     end
   end
 
   # Return true if poll is to be performed, false if it is to be skipped
   def evaluate_poll_condition(poll_state)
-    return true unless @state_file["poll_condition_function"]
-    @logger.debug? && @logger.debug("evaluate_poll_condition.", :poll_condition_function => @state_file["poll_condition_function"],
+  pc_fun = @state_file["poll_condition_function"]
+    return true unless pc_fun
+    @logger.debug? && @logger.debug("evaluate_poll_condition.", :poll_condition_function => pc_fun,
         :poll_state => poll_state)
     begin
-        eval(@state_file["poll_condition_function"])
+        eval(pc_fun)
     rescue SyntaxError => se
-        @logger.debug("Your poll_condition_function failed with SyntaxError.", :se => se, :update_function => update_function)
+        @logger.warn("Your poll_condition_function failed with SyntaxError.", :se => se,
+            :poll_condition_function => pc_fun)
     end
   end
 
