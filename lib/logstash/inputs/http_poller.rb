@@ -222,23 +222,24 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
       body = response.body
       # If there is a usable response. HEAD requests are `nil` and empty get
       # responses come up as "" which will cause the codec to not yield anything
-      last_event = nil
+      event = nil
       if body && body.size > 0
         decode_and_flush(@codec, body) do |decoded|
           event = @target ? LogStash::Event.new(@target => decoded.to_hash) : decoded
           handle_decoded_event(queue, name, request, response, event, execution_time)
-          last_event = event
         end
       else
         event = ::LogStash::Event.new
-        last_event = event
         handle_decoded_event(queue, name, request, response, event, execution_time)
       end
-      update_state_file(last_event.to_hash, state) if @state_file
+      update_state_file(event, state) if @state_file
     end
   end
 
   def update_state_file(last_event, poll_state)
+    if last_event != nil
+        last_event = last_event.to_hash
+    end
     @logger.debug? && @logger.debug("update_state_file.", :update_function => @state_file["update_function"],
         :poll_state => poll_state, :last_event => last_event)
     begin
