@@ -210,27 +210,32 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
 
   private
   def handle_success(queue, name, request, response, execution_time, state)
-    # Manticore's definition of "success" includes requests that return non-2xx response codes.
-    # All such responses need to be handled here.
-    if response.code > 299 && (!@eventify_http_failures) && @logger.warn?
-       @logger.warn("Non-successful http response received",
-                                      :url => request,
-                                      :response => response)
-    else
-      body = response.body
-      # If there is a usable response. HEAD requests are `nil` and empty get
-      # responses come up as "" which will cause the codec to not yield anything
-      event = nil
-      if body && body.size > 0
-        decode_and_flush(@codec, body) do |decoded|
-          event = @target ? LogStash::Event.new(@target => decoded.to_hash) : decoded
+    begin
+      # Manticore's definition of "success" includes requests that return non-2xx response codes.
+      # All such responses need to be handled here.
+      if response.code > 299 && (!@eventify_http_failures) && @logger.warn?
+        @logger.warn("Non-successful http response received",
+                     :url => request,
+                     :response => response)
+      else
+        body = response.body
+        # If there is a usable response. HEAD requests are `nil` and empty get
+        # responses come up as "" which will cause the codec to not yield anything
+        event = nil
+        if body && body.size > 0
+          decode_and_flush(@codec, body) do |decoded|
+            event = @target ? LogStash::Event.new(@target => decoded.to_hash) : decoded
+            handle_decoded_event(queue, name, request, response, event, execution_time)
+          end
+        else
+          event = ::LogStash::Event.new
           handle_decoded_event(queue, name, request, response, event, execution_time)
         end
-      else
-        event = ::LogStash::Event.new
-        handle_decoded_event(queue, name, request, response, event, execution_time)
+        update_state_file(event, state) if @state_file
       end
-      update_state_file(event, state) if @state_file
+    rescue StandardError => e
+      @logger.error("caught error in handle_success", :e=>e)
+      raise
     end
   end
 
