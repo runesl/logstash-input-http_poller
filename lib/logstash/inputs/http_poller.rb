@@ -241,7 +241,9 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
 
   def update_state_file(last_event, poll_state)
     if last_event != nil
-        last_event = last_event.to_hash
+      # "clone" below to avoid ConcurrentModificationException in to_hash due to logstash chain modifying event
+      # object concurrently in another thread
+        last_event = last_event.clone.to_hash
     end
     @logger.debug? && @logger.debug("update_state_file.", :update_function => @state_file["update_function"],
         :poll_state => poll_state, :last_event => last_event)
