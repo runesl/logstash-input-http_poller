@@ -224,14 +224,18 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
         event = nil
         if body && body.size > 0
           decode_and_flush(@codec, body) do |decoded|
+            if event != nil
+              handle_decoded_event(queue, name, request, response, event, execution_time)
+            end
             event = @target ? LogStash::Event.new(@target => decoded.to_hash) : decoded
-            handle_decoded_event(queue, name, request, response, event, execution_time)
           end
         else
           event = ::LogStash::Event.new
-          handle_decoded_event(queue, name, request, response, event, execution_time)
         end
         update_state_file(event, state) if @state_file
+        # We don't handle the last event until now, as we need to use it to update the state file *before* it's queued
+        # to avoid ConcurrentModificationException
+        handle_decoded_event(queue, name, request, response, event, execution_time)
       end
     rescue StandardError => e
       @logger.error("caught error in handle_success", :e=>e)
@@ -241,9 +245,7 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
 
   def update_state_file(last_event, poll_state)
     if last_event != nil
-      # "clone" below to avoid ConcurrentModificationException in to_hash due to logstash chain modifying event
-      # object concurrently in another thread
-        last_event = last_event.clone.to_hash
+      last_event = last_event.to_hash
     end
     @logger.debug? && @logger.debug("update_state_file.", :update_function => @state_file["update_function"],
         :poll_state => poll_state, :last_event => last_event)
@@ -258,7 +260,7 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
 
   # Return true if poll is to be performed, false if it is to be skipped
   def evaluate_poll_condition(poll_state)
-  pc_fun = @state_file["poll_condition_function"]
+    pc_fun = @state_file["poll_condition_function"]
     return true unless pc_fun
     @logger.debug? && @logger.debug("evaluate_poll_condition.", :poll_condition_function => pc_fun,
         :poll_state => poll_state)
