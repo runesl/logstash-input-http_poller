@@ -235,7 +235,8 @@ class LogStash::Inputs::HTTP_Poller < LogStash::Inputs::Base
         update_state_file(event, state) if @state_file
         # We don't handle the last event until now, as we need to use it to update the state file *before* it's queued
         # to avoid ConcurrentModificationException
-        handle_decoded_event(queue, name, request, response, event, execution_time)
+        if event != nil
+            handle_decoded_event(queue, name, request, response, event, execution_time)
       end
     rescue StandardError => e
       @logger.error("caught error in handle_success", :e=>e)
